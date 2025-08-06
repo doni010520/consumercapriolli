@@ -381,8 +381,8 @@ app.use((err, req, res, next) => {
 });
 
 // Inicia o servidor
-app.listen(PORT, () => {
-  console.log(`🚀 API rodando em http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 API rodando em http://0.0.0.0:${PORT}`);
   console.log(`🗄️  Banco de dados: Supabase`);
   console.log(`✅ Token de autenticação: Bearer ${API_TOKEN}`);
   console.log(`📝 Endpoints da API:`);
