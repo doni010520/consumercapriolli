@@ -12,7 +12,7 @@ app.use(cors());
 app.use(express.json());
 
 // Porta onde a API vai rodar
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 
 // Token de autenticação (use variável de ambiente em produção)
 const API_TOKEN = process.env.API_TOKEN || '4f9d8e7c6b5a4d3c2f1e0a9b8c7d6e5f4a3b2c1d';
