@@ -1,3 +1,4 @@
+
 // index.js
 
 // Importando bibliotecas
@@ -60,7 +61,7 @@ async function initDb() {
     console.log('🔄 Inicializando estrutura do banco de dados...');
     
     // 1) Cria a tabela 'pedidos' se não existir, já incluindo created_at e updated_at
-    await pool.query(
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS pedidos (
         id TEXT PRIMARY KEY,
         dados JSONB NOT NULL,
@@ -68,17 +69,17 @@ async function initDb() {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
-    );
+    `);
     console.log('✅ Tabela "pedidos" verificada/criada');
 
     // 2) Garante que, em bancos legados, a coluna 'updated_at' exista
-    await pool.query(
+    await pool.query(`
       ALTER TABLE pedidos
       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-    );
+    `);
 
     // 3) Cria a tabela 'pedidos_events' se não existir, já incluindo 'consumed'
-    await pool.query(
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS pedidos_events (
         event_id SERIAL PRIMARY KEY,
         order_id TEXT NOT NULL,
@@ -87,22 +88,22 @@ async function initDb() {
         consumed BOOLEAN DEFAULT FALSE,
         timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-    );
+    `);
     console.log('✅ Tabela "pedidos_events" verificada/criada');
 
     // 4) Garante que, em bancos legados, a coluna 'consumed' exista
-    await pool.query(
+    await pool.query(`
       ALTER TABLE pedidos_events
       ADD COLUMN IF NOT EXISTS consumed BOOLEAN NOT NULL DEFAULT FALSE;
-    );
+    `);
 
     // 5) Criar índices para melhor performance (opcional mas recomendado)
-    await pool.query(
+    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_pedidos_status ON pedidos(status);
       CREATE INDEX IF NOT EXISTS idx_pedidos_created_at ON pedidos(created_at);
       CREATE INDEX IF NOT EXISTS idx_events_consumed ON pedidos_events(consumed);
       CREATE INDEX IF NOT EXISTS idx_events_order_id ON pedidos_events(order_id);
-    );
+    `);
     console.log('✅ Índices verificados/criados');
 
     console.log('✅ Estrutura do banco inicializada com sucesso!');
@@ -151,11 +152,11 @@ app.get('/', (req, res) => {
 
 app.get('/debug/pedidos', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await pool.query(`
       SELECT id, status, created_at, updated_at
       FROM pedidos
       ORDER BY created_at DESC
-    );
+    `);
     res.json(rows);
   } catch (error) {
     console.error('Erro ao buscar pedidos:', error);
@@ -165,12 +166,12 @@ app.get('/debug/pedidos', async (req, res) => {
 
 app.get('/debug/eventos', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await pool.query(`
       SELECT *
       FROM pedidos_events
       ORDER BY event_id DESC
       LIMIT 50
-    );
+    `);
     res.json(rows);
   } catch (error) {
     console.error('Erro ao buscar eventos:', error);
@@ -186,7 +187,7 @@ app.use('/api', authenticate);
 // 1) ENDPOINT DE POLLING
 app.get('/api/polling', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await pool.query(`
       SELECT
         pe.event_id::text AS id,
         pe.order_id AS "orderId",
@@ -215,15 +216,15 @@ app.get('/api/polling', async (req, res) => {
       WHERE pe.consumed = FALSE
       ORDER BY pe.event_id ASC
       LIMIT 10
-    );
+    `);
 
     if (rows.length > 0) {
       const ids = rows.map(r => r.id);
-      await pool.query(
+      await pool.query(`
         UPDATE pedidos_events
         SET consumed = TRUE
         WHERE event_id = ANY($1::int[])
-      , [ids]);
+      `, [ids]);
     }
 
     res.json({ items: rows, statusCode: 0, reasonPhrase: null });
@@ -246,10 +247,10 @@ app.get('/api/order/:orderId', async (req, res) => {
       return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
-    await pool.query(
+    await pool.query(`
       INSERT INTO pedidos_events(order_id, event_type)
       VALUES($1, 'ORDER_DETAILS_REQUESTED')
-    , [orderId]);
+    `, [orderId]);
 
     res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
   } catch (error) {
@@ -266,7 +267,7 @@ app.post('/api/order/details', async (req, res) => {
       return res.status(400).json({ statusCode: 400, reasonPhrase: 'ID do pedido é obrigatório' });
     }
 
-    await pool.query(
+    await pool.query(`
       INSERT INTO pedidos (id, dados, status, updated_at)
       VALUES ($1, $2, 'PLACED', NOW())
       ON CONFLICT (id)
@@ -274,14 +275,14 @@ app.post('/api/order/details', async (req, res) => {
         dados = EXCLUDED.dados,
         status = CASE WHEN pedidos.status IS NULL THEN 'PLACED' ELSE pedidos.status END,
         updated_at = NOW()
-    , [pedido.Id, pedido]);
+    `, [pedido.Id, pedido]);
 
-    await pool.query(
+    await pool.query(`
       INSERT INTO pedidos_events(order_id, event_type, new_status)
       VALUES($1, 'ORDER_DETAILS_SENT', 'PLACED')
-    , [pedido.Id]);
+    `, [pedido.Id]);
 
-    res.json({ statusCode: 0, reasonPhrase: ${pedido.Id} enviado com sucesso. });
+    res.json({ statusCode: 0, reasonPhrase: `${pedido.Id} enviado com sucesso.` });
   } catch (error) {
     console.error('Erro salvando detalhes:', error);
     res.status(500).json({ statusCode: 500, reasonPhrase: error.message });
@@ -301,20 +302,20 @@ app.post('/api/order/status', async (req, res) => {
       return res.status(404).json({ statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
-    await pool.query(
+    await pool.query(`
       UPDATE pedidos
       SET status = $1, updated_at = NOW()
       WHERE id = $2
-    , [status, orderId]);
+    `, [status, orderId]);
 
-    await pool.query(
+    await pool.query(`
       INSERT INTO pedidos_events(order_id, event_type, new_status)
       VALUES($1, 'status_updated', $2)
-    , [orderId, status]);
+    `, [orderId, status]);
 
     res.json({
       statusCode: 0,
-      reasonPhrase: ${orderId} alterado para '${status}': ${justification || 'Status atualizado'}.
+      reasonPhrase: `${orderId} alterado para '${status}': ${justification || 'Status atualizado'}.`
     });
   } catch (error) {
     console.error('Erro atualizando status:', error);
@@ -326,14 +327,14 @@ app.post('/api/order/status', async (req, res) => {
 app.post('/test/criar-pedido', async (req, res) => {
   try {
     const pedidoTeste = {
-      id: TEST-${Date.now()},
+      id: `TEST-${Date.now()}`,
       orderType: "DELIVERY",
       displayId: Math.floor(Math.random() * 9999).toString(),
       salesChannel: "PARTNER",
       createdAt: new Date().toISOString(),
       merchant: { id: "2eff44c8-ff06-4507-8233-e3f72c4e59af", name: "Teste - Consumer Integration" },
       items: [{
-        id: ITEM-${Date.now()},
+        id: `ITEM-${Date.now()}`,
         name: "Pizza Teste",
         externalCode: "112",
         quantity: 1,
@@ -341,7 +342,7 @@ app.post('/test/criar-pedido', async (req, res) => {
         totalPrice: 35.00
       }],
       total: { itemsPrice: 35.00, deliveryFee: 5.00, orderAmount: 40.00 },
-      customer: { id: CUSTOMER-${Date.now()}, name: "Cliente Teste", phone: { number: "11999999999" } },
+      customer: { id: `CUSTOMER-${Date.now()}`, name: "Cliente Teste", phone: { number: "11999999999" } },
       payments: { methods: [{ method: "CREDIT", type: "ONLINE", value: 40.00 }], prepaid: 40.00, pending: 0 },
       delivery: {
         mode: "DEFAULT", deliveredBy: "MERCHANT",
@@ -353,15 +354,15 @@ app.post('/test/criar-pedido', async (req, res) => {
       }
     };
 
-    await pool.query(
+    await pool.query(`
       INSERT INTO pedidos (id, dados, status)
       VALUES ($1, $2, 'PLACED')
-    , [pedidoTeste.id, pedidoTeste]);
+    `, [pedidoTeste.id, pedidoTeste]);
 
-    await pool.query(
+    await pool.query(`
       INSERT INTO pedidos_events(order_id, event_type, new_status)
       VALUES($1, 'created', 'PLACED')
-    , [pedidoTeste.id]);
+    `, [pedidoTeste.id]);
 
     res.json({ mensagem: 'Pedido de teste criado com sucesso', pedidoId: pedidoTeste.id });
   } catch (error) {
@@ -382,18 +383,18 @@ app.use((err, req, res, next) => {
 
 // Inicia o servidor
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(🚀 API rodando em http://0.0.0.0:${PORT});
-  console.log(🗄️  Banco de dados: Supabase);
-  console.log(✅ Token de autenticação: Bearer ${API_TOKEN});
-  console.log(📝 Endpoints da API:);
-  console.log(   - GET  /api/polling);
-  console.log(   - GET  /api/order/:orderId);
-  console.log(   - POST /api/order/details);
-  console.log(   - POST /api/order/status);
-  console.log(🔧 Debug:);
-  console.log(   - GET  /debug/pedidos);
-  console.log(   - GET  /debug/eventos);
-  console.log(   - POST /test/criar-pedido);
+  console.log(`🚀 API rodando em http://0.0.0.0:${PORT}`);
+  console.log(`🗄️  Banco de dados: Supabase`);
+  console.log(`✅ Token de autenticação: Bearer ${API_TOKEN}`);
+  console.log(`📝 Endpoints da API:`);
+  console.log(`   - GET  /api/polling`);
+  console.log(`   - GET  /api/order/:orderId`);
+  console.log(`   - POST /api/order/details`);
+  console.log(`   - POST /api/order/status`);
+  console.log(`🔧 Debug:`);
+  console.log(`   - GET  /debug/pedidos`);
+  console.log(`   - GET  /debug/eventos`);
+  console.log(`   - POST /test/criar-pedido`);
 });
 
 // Graceful shutdown
