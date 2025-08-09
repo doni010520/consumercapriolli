@@ -98,7 +98,9 @@ function authenticate(req, res, next) {
         q: req.query?.token,
       });
     }
-    return res.status(401).json({ statusCode: 401, reasonPhrase: 'Token inválido ou ausente' });
+    return res
+      .status(401)
+      .json({ statusCode: 401, reasonPhrase: 'Token inválido ou ausente' });
   }
 
   next();
@@ -250,7 +252,7 @@ app.get('/api/polling', async (req, res) => {
     `);
 
     if (rows.length > 0) {
-      const ids = rows.map(r => Number(r.id));
+      const ids = rows.map((r) => Number(r.id));
       await pool.query(
         `UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])`,
         [ids]
@@ -267,4 +269,234 @@ app.get('/api/polling', async (req, res) => {
 // 2) GET DETALHES DO PEDIDO
 app.get('/api/order/:orderId', async (req, res) => {
   try {
-    const { or
+    const { orderId } = req.params;
+    const { rows } = await pool.query(
+      'SELECT dados, status FROM pedidos WHERE id = $1',
+      [orderId]
+    );
+
+    if (rows.length === 0) {
+      return sendError(res, 404, 'Pedido não encontrado');
+    }
+
+    // registra ODR
+    await pool.query(
+      `INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`,
+      [orderId]
+    );
+
+    // retorna exatamente o JSON salvo (deve estar em camelCase conforme Consumer)
+    return res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
+  } catch (error) {
+    console.error('Erro buscando pedido:', error);
+    return sendError(res, 500, 'Erro ao buscar pedido', error);
+  }
+});
+
+// 3) POST RECEBER DETALHES
+// Aceita 3 formatos de body:
+//  A) pedido completo (camelCase) contendo "id"
+//  B) { Id: "...", ...pedidoCamelCase }
+//  C) { id: "...", status: "...?", dados: { ...pedidoCamelCase } }
+app.post('/api/order/details', async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    const orderId =
+      body.Id ||
+      body.id ||
+      (body.dados && (body.dados.id || body.dados.Id));
+
+    if (!orderId) {
+      return sendError(res, 400, 'ID do pedido é obrigatório');
+    }
+
+    const pedidoDados = body.dados ? body.dados : body;
+
+    await pool.query(
+      `
+      INSERT INTO pedidos (id, dados, status, updated_at)
+      VALUES ($1, $2, COALESCE($3, 'PLACED'), NOW())
+      ON CONFLICT (id)
+      DO UPDATE SET
+        dados = EXCLUDED.dados,
+        status = COALESCE(pedidos.status, EXCLUDED.status, 'PLACED'),
+        updated_at = NOW()
+      `,
+      [orderId, pedidoDados, body.status || null]
+    );
+
+    await pool.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status)
+       VALUES($1, 'ORDER_DETAILS_SENT', 'PLACED')`,
+      [orderId]
+    );
+
+    return res.json({
+      statusCode: 0,
+      reasonPhrase: `${orderId} enviado com sucesso.`,
+    });
+  } catch (error) {
+    console.error('Erro salvando detalhes:', error);
+    return sendError(res, 500, 'Erro ao salvar detalhes do pedido', error);
+  }
+});
+
+// 4) POST ATUALIZAÇÃO DE STATUS
+app.post('/api/order/status', async (req, res) => {
+  try {
+    const { orderId, status, justification } = req.body || {};
+    if (!orderId || !status) {
+      return sendError(res, 400, 'orderId e status são obrigatórios');
+    }
+
+    const { rowCount } = await pool.query(
+      'SELECT 1 FROM pedidos WHERE id = $1',
+      [orderId]
+    );
+    if (rowCount === 0) {
+      return sendError(res, 404, 'Pedido não encontrado');
+    }
+
+    await pool.query(
+      `UPDATE pedidos SET status = $1, updated_at = NOW() WHERE id = $2`,
+      [status, orderId]
+    );
+
+    await pool.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status)
+       VALUES($1, 'status_updated', $2)`,
+      [orderId, status]
+    );
+
+    return res.json({
+      statusCode: 0,
+      reasonPhrase: `${orderId} alterado para '${status}': ${
+        justification || 'Status atualizado'
+      }.`,
+    });
+  } catch (error) {
+    console.error('Erro atualizando status:', error);
+    return sendError(res, 500, 'Erro ao atualizar status', error);
+  }
+});
+
+// ==============================
+// Rotas de teste
+// ==============================
+app.post('/test/criar-pedido', async (req, res) => {
+  try {
+    const pedidoTeste = {
+      id: `TEST-${Date.now()}`,
+      orderType: 'DELIVERY',
+      displayId: Math.floor(Math.random() * 9999).toString(),
+      salesChannel: 'PARTNER',
+      createdAt: new Date().toISOString(),
+      merchant: {
+        id: '2eff44c8-ff06-4507-8233-e3f72c4e59af',
+        name: 'Teste - Consumer Integration',
+      },
+      items: [
+        {
+          id: `ITEM-${Date.now()}`,
+          name: 'Pizza Teste',
+          externalCode: '112',
+          quantity: 1,
+          unitPrice: 35.0,
+          totalPrice: 35.0,
+        },
+      ],
+      total: { subTotal: 35.0, deliveryFee: 5.0, orderAmount: 40.0 },
+      customer: {
+        id: `CUSTOMER-${Date.now()}`,
+        name: 'Cliente Teste',
+        phone: { number: '11999999999' },
+      },
+      payments: {
+        methods: [
+          { method: 'CREDIT', type: 'ONLINE', value: 40.0, currency: 'BRL' },
+        ],
+        prepaid: 40.0,
+        pending: 0,
+      },
+      delivery: {
+        mode: 'DEFAULT',
+        deliveredBy: 'MERCHANT',
+        deliveryAddress: {
+          streetName: 'Rua Teste',
+          streetNumber: '123',
+          neighborhood: 'Bairro Teste',
+          city: 'São Paulo',
+          state: 'SP',
+          postalCode: '01234-567',
+          country: 'BR',
+        },
+      },
+    };
+
+    await pool.query(
+      `INSERT INTO pedidos (id, dados, status)
+       VALUES ($1, $2, 'PLACED')
+       ON CONFLICT (id) DO NOTHING`,
+      [pedidoTeste.id, pedidoTeste]
+    );
+
+    await pool.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status)
+       VALUES($1, 'CREATED', 'PLACED')`,
+      [pedidoTeste.id]
+    );
+
+    return res.json({
+      mensagem: 'Pedido de teste criado com sucesso',
+      pedidoId: pedidoTeste.id,
+    });
+  } catch (error) {
+    console.error('Erro ao criar pedido de teste:', error);
+    return sendError(res, 500, 'Erro ao criar pedido de teste', error);
+  }
+});
+
+// ==============================
+// Erro global
+// ==============================
+app.use((err, req, res, next) => {
+  console.error('Erro não tratado:', err.stack);
+  return sendError(res, 500, 'Erro interno do servidor', err);
+});
+
+// ==============================
+// Start
+// ==============================
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 API rodando em http://0.0.0.0:${PORT}`);
+  console.log(`🗄️  Banco de dados: Supabase`);
+  console.log(
+    `🔐 Token de autenticação: ${API_TOKEN ? '[definido]' : 'NÃO DEFINIDO'}`
+  );
+  console.log(
+    `📝 Endpoints: GET /api/polling | GET /api/order/:orderId | POST /api/order/details | POST /api/order/status`
+  );
+  console.log(
+    `🔧 Debug: GET /debug/pedidos | GET /debug/eventos | POST /test/criar-pedido | GET /healthz`
+  );
+});
+
+// ==============================
+// Graceful shutdown
+// ==============================
+function gracefulExit(signal) {
+  console.log(`${signal} recebido. Fechando conexões...`);
+  pool
+    .end()
+    .then(() => {
+      console.log('Pool de conexões fechado.');
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error('Erro ao fechar pool:', err?.message || err);
+      process.exit(0);
+    });
+}
+process.on('SIGTERM', () => gracefulExit('SIGTERM'));
+process.on('SIGINT', () => gracefulExit('SIGINT'));
