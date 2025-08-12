@@ -6,7 +6,7 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-require('dotenv').config(); // Para usar variáveis de ambiente
+require('dotenv').config();
 
 const app = express();
 app.use(cors());
@@ -16,7 +16,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 4000;
 
 // Token de autenticação (use variável de ambiente em produção)
-const API_TOKEN = process.env.API_TOKEN || '4f9d8e7c6b5a4d3c2f1e0a9b8c7d6e5f4a3b2c1d';
+const API_TOKEN = process.env.API_TOKEN || '123456';
 
 // =====================================================
 // CONFIGURAÇÃO DO BANCO DE DADOS (SUPABASE)
@@ -25,42 +25,38 @@ const API_TOKEN = process.env.API_TOKEN || '4f9d8e7c6b5a4d3c2f1e0a9b8c7d6e5f4a3b
 let pool;
 const dbConfig = {};
 
-// Método 1: Tenta usar a Connection String (preferencial)
+// Método 1: Connection String
 if (process.env.DATABASE_URL) {
-    console.log("🔌 Tentando conectar usando DATABASE_URL...");
-    dbConfig.connectionString = process.env.DATABASE_URL;
-} 
-// Método 2: Fallback para variáveis de ambiente individuais (como no código original)
+  console.log('🔌 Tentando conectar usando DATABASE_URL...');
+  dbConfig.connectionString = process.env.DATABASE_URL;
+}
+// Método 2: Variáveis separadas
 else if (process.env.SUPABASE_HOST) {
-    console.log("🔌 DATABASE_URL não encontrada. Tentando conectar com variáveis de ambiente separadas...");
-    dbConfig.host = process.env.SUPABASE_HOST;
-    dbConfig.port = process.env.SUPABASE_PORT || 5432;
-    dbConfig.user = process.env.SUPABASE_USER;
-    dbConfig.password = process.env.SUPABASE_PASSWORD;
-    dbConfig.database = process.env.SUPABASE_DB || 'postgres';
+  console.log('🔌 DATABASE_URL não encontrada. Tentando conectar com variáveis de ambiente separadas...');
+  dbConfig.host = process.env.SUPABASE_HOST;
+  dbConfig.port = process.env.SUPABASE_PORT || 5432;
+  dbConfig.user = process.env.SUPABASE_USER;
+  dbConfig.password = process.env.SUPABASE_PASSWORD;
+  dbConfig.database = process.env.SUPABASE_DB || 'postgres';
 }
 
-// Validação final: Se nenhuma configuração foi encontrada, encerra a aplicação.
+// Validação final
 if (!dbConfig.connectionString && !dbConfig.host) {
-    console.error('❌ ERRO FATAL: Nenhuma configuração de banco de dados encontrada.');
-    console.error('Por favor, configure a variável de ambiente DATABASE_URL ou as variáveis SUPABASE_HOST, SUPABASE_USER, etc.');
-    process.exit(1);
+  console.error('❌ ERRO FATAL: Nenhuma configuração de banco de dados encontrada.');
+  console.error('Configure DATABASE_URL ou as variáveis SUPABASE_HOST, SUPABASE_USER, etc.');
+  process.exit(1);
 }
 
-// Adiciona configuração SSL obrigatória para o Supabase
-dbConfig.ssl = {
-    rejectUnauthorized: false
-};
-
+// SSL para Supabase
+dbConfig.ssl = { rejectUnauthorized: false };
 pool = new Pool(dbConfig);
-
 
 // Teste de conexão
 pool.connect((err, client, release) => {
   if (err) {
     console.error('❌ Erro ao conectar ao Supabase:', err.stack);
     if (err.message.includes('SSL')) {
-        console.info('💡 DICA: Erros de SSL com o Supabase geralmente são resolvidos garantindo que a connection string termine com "?sslmode=require".');
+      console.info('💡 DICA: garanta "?sslmode=require" na connection string.');
     }
   } else {
     console.log('✅ Conectado ao banco de dados Supabase com sucesso!');
@@ -72,19 +68,12 @@ pool.connect((err, client, release) => {
 // INICIALIZAÇÃO E ESTRUTURA DO BANCO DE DADOS
 // =====================================================
 
-/**
- * Garante que as tabelas necessárias (merchants, pedidos, pedidos_events)
- * e seus respectivos campos e índices existam no banco de dados.
- * Esta função é idempotente e pode ser executada com segurança na inicialização.
- */
 async function initDb() {
   const client = await pool.connect();
   try {
     console.log('🔄 Inicializando estrutura do banco de dados...');
     await client.query('BEGIN');
 
-    // 1) Tabela 'merchants': Armazena os dados de cada estabelecimento.
-    // O ID é a chave primária (UUID) fornecida pela plataforma parceira.
     await client.query(`
       CREATE TABLE IF NOT EXISTS merchants (
         id UUID PRIMARY KEY,
@@ -99,7 +88,6 @@ async function initDb() {
     `);
     console.log('✅ Tabela "merchants" verificada/criada.');
 
-    // 2) Tabela 'pedidos': Armazena os pedidos, agora com referência ao merchant.
     await client.query(`
       CREATE TABLE IF NOT EXISTS pedidos (
         id TEXT PRIMARY KEY,
@@ -112,7 +100,6 @@ async function initDb() {
     `);
     console.log('✅ Tabela "pedidos" verificada/criada.');
 
-    // 3) Tabela 'pedidos_events': Armazena o histórico de eventos de cada pedido.
     await client.query(`
       CREATE TABLE IF NOT EXISTS pedidos_events (
         event_id SERIAL PRIMARY KEY,
@@ -125,7 +112,6 @@ async function initDb() {
     `);
     console.log('✅ Tabela "pedidos_events" verificada/criada.');
 
-    // 4) Criação de Índices para otimizar consultas
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pedidos_merchant_id ON pedidos(merchant_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pedidos_status ON pedidos(status);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pedidos_created_at ON pedidos(created_at);`);
@@ -144,58 +130,73 @@ async function initDb() {
   }
 }
 
-/**
- * Insere ou atualiza os dados do merchant de teste (Pizzaria Capriolli)
- * para garantir que os endpoints de teste funcionem corretamente.
- */
 async function seedInitialMerchant() {
-    console.log('🌱 Verificando e inserindo dados do merchant de teste...');
-    const merchantData = {
-        id: '19f40604-e725-4fd4-ad06-aae8aaa8e213',
-        code: '81193',
-        name: 'Pizzaria Capriolli',
-        url: 'Capriolli',
-        connectDbId: '-2147463250',
-        roles: ['consumer-rede', 'mobile', 'fiscal', 'menudino-completo', 'connect', 'taxa-implantacao-treinamento']
-    };
+  console.log('🌱 Verificando e inserindo dados do merchant de teste...');
+  const merchantData = {
+    id: '19f40604-e725-4fd4-ad06-aae8aaa8e213',
+    code: '81193',
+    name: 'Pizzaria Capriolli',
+    url: 'Capriolli',
+    connectDbId: '-2147463250',
+    roles: ['consumer-rede', 'mobile', 'fiscal', 'menudino-completo', 'connect', 'taxa-implantacao-treinamento'],
+  };
 
-    try {
-        await pool.query(`
-            INSERT INTO merchants (id, code, name, url, connect_db_id, roles, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
-            ON CONFLICT (id) DO UPDATE SET
-                code = EXCLUDED.code,
-                name = EXCLUDED.name,
-                url = EXCLUDED.url,
-                connect_db_id = EXCLUDED.connect_db_id,
-                roles = EXCLUDED.roles,
-                updated_at = NOW();
-        `, [merchantData.id, merchantData.code, merchantData.name, merchantData.url, merchantData.connectDbId, JSON.stringify(merchantData.roles)]);
-        console.log('✅ Merchant de teste "Pizzaria Capriolli" garantido no banco.');
-    } catch (error) {
-        console.error('❌ Erro ao inserir merchant de teste:', error);
-    }
+  try {
+    await pool.query(
+      `
+      INSERT INTO merchants (id, code, name, url, connect_db_id, roles, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        code = EXCLUDED.code,
+        name = EXCLUDED.name,
+        url = EXCLUDED.url,
+        connect_db_id = EXCLUDED.connect_db_id,
+        roles = EXCLUDED.roles,
+        updated_at = NOW();
+    `,
+      [merchantData.id, merchantData.code, merchantData.name, merchantData.url, merchantData.connectDbId, JSON.stringify(merchantData.roles)],
+    );
+    console.log('✅ Merchant de teste "Pizzaria Capriolli" garantido no banco.');
+  } catch (error) {
+    console.error('❌ Erro ao inserir merchant de teste:', error);
+  }
 }
 
-
-// Executa a inicialização do DB ao iniciar a aplicação
-initDb().then(seedInitialMerchant).catch(err => {
-  console.error('🚨 Erro fatal ao inicializar o banco:', err);
-  process.exit(1);
-});
+initDb()
+  .then(seedInitialMerchant)
+  .catch((err) => {
+    console.error('🚨 Erro fatal ao inicializar o banco:', err);
+    process.exit(1);
+  });
 
 // =====================================================
-// MIDDLEWARE DE AUTENTICAÇÃO
+// MIDDLEWARE DE AUTENTICAÇÃO (mais tolerante a formatos)
 // =====================================================
 const authenticate = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
+  const h = req.headers;
+  const rawAuth = h['authorization'];
+
+  // Suporta "Bearer xxx", "Token xxx" ou o token cru no Authorization
+  const fromAuth =
+    rawAuth?.startsWith('Bearer ') ? rawAuth.slice(7) :
+    rawAuth?.startsWith('Token ')  ? rawAuth.slice(6) :
+    rawAuth;
+
+  const token =
+    (fromAuth && fromAuth.trim()) ||
+    h['x-api-key'] ||
+    h['x-access-token'] ||
+    req.query.token ||
+    (req.body && req.body.token);
+
   if (token !== API_TOKEN) {
-    console.warn(`[AUTH] Tentativa de acesso com token inválido: ${token}`);
-    return res.status(401).json({
-      statusCode: 401,
-      reasonPhrase: 'Token inválido ou ausente'
-    });
+    // Log detalhado opcional
+    if (process.env.DEBUG_AUTH === '1') {
+      console.warn(`[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" recebido="${token || 'undefined'}"`);
+    } else {
+      console.warn(`[AUTH] ${req.method} ${req.path} token inválido ou ausente`);
+    }
+    return res.status(401).json({ statusCode: 401, reasonPhrase: 'Token inválido ou ausente' });
   }
   next();
 };
@@ -213,20 +214,25 @@ app.get('/', (req, res) => {
       polling: 'GET /api/polling',
       detalhes: 'GET /api/order/:orderId',
       envioDetalhes: 'POST /api/order/details',
-      atualizacaoStatus: 'POST /api/order/status'
-    }
+      atualizacaoStatus: 'POST /api/order/status',
+    },
   });
 });
 
-// Rota para depurar todos os merchants cadastrados
+// Health check público (sem auth)
+app.get('/healthz', (_req, res) => {
+  res.json({ ok: true, version: '2.0.2', time: new Date().toISOString() });
+});
+
+// Debug
 app.get('/debug/merchants', async (req, res) => {
-    try {
-        const { rows } = await pool.query('SELECT * FROM merchants ORDER BY created_at DESC');
-        res.json(rows);
-    } catch (error) {
-        console.error('Erro ao buscar merchants:', error);
-        res.status(500).json({ erro: error.message });
-    }
+  try {
+    const { rows } = await pool.query('SELECT * FROM merchants ORDER BY created_at DESC');
+    res.json(rows);
+  } catch (error) {
+    console.error('Erro ao buscar merchants:', error);
+    res.status(500).json({ erro: error.message });
+  }
 });
 
 app.get('/debug/pedidos', async (req, res) => {
@@ -296,10 +302,11 @@ app.get('/api/polling', async (req, res) => {
     `);
 
     if (rows.length > 0) {
-      const ids = rows.map(r => r.id);
-      await pool.query(`
-        UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])
-      `, [ids]);
+      const ids = rows.map((r) => Number(r.id));
+      await pool.query(
+        'UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])',
+        [ids],
+      );
     }
 
     res.json({ items: rows, statusCode: 0, reasonPhrase: null });
@@ -313,22 +320,17 @@ app.get('/api/polling', async (req, res) => {
 app.get('/api/order/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { rows } = await pool.query(
-      'SELECT dados FROM pedidos WHERE id = $1',
-      [orderId]
-    );
+    const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
 
     if (rows.length === 0) {
       return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
-    // Gera um evento de que os detalhes foram solicitados
-    await pool.query(`
-      INSERT INTO pedidos_events(order_id, event_type)
-      VALUES($1, 'ORDER_DETAILS_REQUESTED')
-    `, [orderId]);
+    await pool.query(
+      `INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`,
+      [orderId],
+    );
 
-    // Retorna o JSON completo do pedido, que já contém o objeto 'merchant'
     res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
   } catch (error) {
     console.error(`Erro buscando pedido ${req.params.orderId}:`, error);
@@ -342,49 +344,49 @@ app.post('/api/order/details', async (req, res) => {
   const client = await pool.connect();
 
   try {
-    // Validação básica do payload
     if (!pedido.Id || !pedido.Merchant || !pedido.Merchant.Id) {
       return res.status(400).json({ statusCode: 400, reasonPhrase: 'ID do pedido e dados do Merchant são obrigatórios' });
     }
 
     await client.query('BEGIN');
 
-    // Etapa 1: Inserir ou atualizar o Merchant (UPSERT)
     const merchant = pedido.Merchant;
-    await client.query(`
-        INSERT INTO merchants (id, name, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            updated_at = NOW();
-    `, [merchant.Id, merchant.Name || 'Nome não informado']);
+    await client.query(
+      `
+      INSERT INTO merchants (id, name, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        updated_at = NOW();
+    `,
+      [merchant.Id, merchant.Name || 'Nome não informado'],
+    );
 
-    // Etapa 2: Inserir ou atualizar o Pedido, associando ao Merchant
-    await client.query(`
+    await client.query(
+      `
       INSERT INTO pedidos (id, merchant_id, dados, status, updated_at)
       VALUES ($1, $2, $3, 'PLACED', NOW())
       ON CONFLICT (id) DO UPDATE SET
         dados = EXCLUDED.dados,
         status = CASE WHEN pedidos.status IS NULL THEN 'PLACED' ELSE pedidos.status END,
         updated_at = NOW();
-    `, [pedido.Id, merchant.Id, pedido]);
+    `,
+      [pedido.Id, merchant.Id, pedido],
+    );
 
-    // Etapa 3: Registrar o evento de criação/envio do pedido
-    await client.query(`
-      INSERT INTO pedidos_events(order_id, event_type, new_status)
-      VALUES($1, 'CREATED', 'PLACED')
-    `, [pedido.Id]);
-    
+    await client.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'CREATED', 'PLACED')`,
+      [pedido.Id],
+    );
+
     await client.query('COMMIT');
-    
     res.status(201).json({ statusCode: 0, reasonPhrase: `Pedido ${pedido.Id} recebido com sucesso.` });
-
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Erro salvando detalhes do pedido:', error);
     res.status(500).json({ statusCode: 500, reasonPhrase: error.message });
   } finally {
-      client.release();
+    client.release();
   }
 });
 
@@ -398,36 +400,32 @@ app.post('/api/order/status', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    
+
     const { rowCount } = await client.query('SELECT 1 FROM pedidos WHERE id = $1', [orderId]);
     if (rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
-    // Atualiza o status na tabela de pedidos
-    await client.query(`
-      UPDATE pedidos SET status = $1, updated_at = NOW() WHERE id = $2
-    `, [status, orderId]);
+    await client.query(`UPDATE pedidos SET status = $1, updated_at = NOW() WHERE id = $2`, [status, orderId]);
 
-    // Insere o evento de atualização de status
-    await client.query(`
-      INSERT INTO pedidos_events(order_id, event_type, new_status)
-      VALUES($1, 'status_updated', $2)
-    `, [orderId, status]);
+    await client.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'status_updated', $2)`,
+      [orderId, status],
+    );
 
     await client.query('COMMIT');
 
     res.json({
       statusCode: 0,
-      reasonPhrase: `Status do pedido ${orderId} alterado para '${status}'.`
+      reasonPhrase: `Status do pedido ${orderId} alterado para '${status}'${justification ? `: ${justification}` : ''}.`,
     });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error(`Erro atualizando status para o pedido ${orderId}:`, error);
     res.status(500).json({ statusCode: 500, reasonPhrase: error.message });
   } finally {
-      client.release();
+    client.release();
   }
 });
 
@@ -438,51 +436,55 @@ app.post('/test/criar-pedido', async (req, res) => {
   const client = await pool.connect();
   try {
     const pedidoId = `TEST-${Date.now()}`;
-    const merchantId = '19f40604-e725-4fd4-ad06-aae8aaa8e213'; // ID da Pizzaria Capriolli
+    const merchantId = '19f40604-e725-4fd4-ad06-aae8aaa8e213';
 
     const pedidoTeste = {
       Id: pedidoId,
-      Type: "DELIVERY",
+      Type: 'DELIVERY',
       DisplayId: Math.floor(Math.random() * 9999).toString(),
-      SalesChannel: "PARTNER",
+      SalesChannel: 'PARTNER',
       CreatedAt: new Date().toISOString(),
-      Merchant: { 
-          Id: merchantId, 
-          Name: "Pizzaria Capriolli" 
-      },
-      Items: [{
-        Id: `ITEM-${Date.now()}`,
-        Name: "Pizza Teste Capriolli",
-        ExternalCode: "112",
-        Quantity: 1,
-        UnitPrice: { Value: 35.00, Currency: "BRL" },
-        TotalPrice: { Value: 35.00, Currency: "BRL" }
-      }],
-      Total: { ItemsPrice: {Value: 35.00}, OtherFees: {Value: 5.00}, OrderAmount: {Value: 40.00} },
-      Customer: { Id: `CUSTOMER-${Date.now()}`, Name: "Cliente Teste", Phone: { Number: "11999999999" } },
-      Payments: { Methods: [{ Method: "CREDIT", Type: "ONLINE", Value: 40.00 }], Prepaid: 40.00, Pending: 0 },
+      Merchant: { Id: merchantId, Name: 'Pizzaria Capriolli' },
+      Items: [
+        {
+          Id: `ITEM-${Date.now()}`,
+          Name: 'Pizza Teste Capriolli',
+          ExternalCode: '112',
+          Quantity: 1,
+          UnitPrice: { Value: 35.0, Currency: 'BRL' },
+          TotalPrice: { Value: 35.0, Currency: 'BRL' },
+        },
+      ],
+      Total: { ItemsPrice: { Value: 35.0 }, OtherFees: { Value: 5.0 }, OrderAmount: { Value: 40.0 } },
+      Customer: { Id: `CUSTOMER-${Date.now()}`, Name: 'Cliente Teste', Phone: { Number: '11999999999' } },
+      Payments: { Methods: [{ Method: 'CREDIT', Type: 'ONLINE', Value: 40.0 }], Prepaid: 40.0, Pending: 0 },
       Delivery: {
-        Mode: "DEFAULT", DeliveredBy: "MERCHANT",
+        Mode: 'DEFAULT',
+        DeliveredBy: 'MERCHANT',
         DeliveryAddress: {
-          StreetName: "Rua Teste", StreetNumber: "123",
-          Neighborhood: "Bairro Teste", City: "São Paulo",
-          State: "SP", PostalCode: "01234-567", Country: "BR"
-        }
-      }
+          StreetName: 'Rua Teste',
+          StreetNumber: '123',
+          Neighborhood: 'Bairro Teste',
+          City: 'São Paulo',
+          State: 'SP',
+          PostalCode: '01234-567',
+          Country: 'BR',
+        },
+      },
     };
-    
+
     await client.query('BEGIN');
 
-    // Insere o pedido
-    await client.query(`
-      INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')
-    `, [pedidoTeste.Id, pedidoTeste.Merchant.Id, pedidoTeste]);
+    await client.query(
+      `INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')`,
+      [pedidoTeste.Id, pedidoTeste.Merchant.Id, pedidoTeste],
+    );
 
-    // Insere o evento de criação
-    await client.query(`
-      INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')
-    `, [pedidoTeste.Id]);
-    
+    await client.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')`,
+      [pedidoTeste.Id],
+    );
+
     await client.query('COMMIT');
 
     res.status(201).json({ mensagem: 'Pedido de teste criado com sucesso', pedidoId: pedidoTeste.Id });
@@ -491,10 +493,9 @@ app.post('/test/criar-pedido', async (req, res) => {
     console.error('Erro ao criar pedido de teste:', error);
     res.status(500).json({ erro: error.message });
   } finally {
-      client.release();
+    client.release();
   }
 });
-
 
 // =====================================================
 // INICIALIZAÇÃO DO SERVIDOR E GRACEFUL SHUTDOWN
@@ -504,15 +505,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     statusCode: 500,
     reasonPhrase: 'Erro interno do servidor',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined,
   });
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API pronta e rodando em http://0.0.0.0:${PORT}`);
   console.log(`🗄️  Banco de dados: Supabase`);
-  console.log(`🔑 Token de autenticação: Bearer ${API_TOKEN}`);
+  console.log(`🔑 Token de autenticação: Bearer ${API_TOKEN ? '[definido]' : '[NÃO DEFINIDO]'}`);
   console.log(`\n📝 Endpoints da API:`);
+  console.log(`   - GET  /healthz`);
   console.log(`   - GET  /api/polling`);
   console.log(`   - GET  /api/order/:orderId`);
   console.log(`   - POST /api/order/details`);
