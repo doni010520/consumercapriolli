@@ -148,18 +148,103 @@ initDb().catch(err => {
   process.exit(1);
 });
 
-// Middleware de autenticação
+// =====================================================
+// MONITORAMENTO E DEBUG
+// =====================================================
+let requestCount = 0;
+let failedAuthCount = 0;
+let successAuthCount = 0;
+let lastRequestTime = Date.now();
+const requestLog = [];
+
+// Middleware de autenticação APRIMORADO com DEBUG
 const authenticate = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
-  if (token !== API_TOKEN) {
-    console.log('Token inválido recebido:', token);
-    return res.status(401).json({
-      statusCode: 401,
-      reasonPhrase: 'Token inválido ou ausente'
+  requestCount++;
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  lastRequestTime = now;
+  
+  // Log detalhado da requisição
+  const requestInfo = {
+    url: req.originalUrl,
+    method: req.method,
+    ip: req.ip || req.connection.remoteAddress,
+    authorization: req.headers.authorization,
+    userAgent: req.headers['user-agent'],
+    timestamp: new Date().toISOString(),
+    timeSinceLastRequest: timeSinceLastRequest + 'ms'
+  };
+  
+  // Adiciona ao log (mantém últimas 100 requisições)
+  requestLog.push(requestInfo);
+  if (requestLog.length > 100) requestLog.shift();
+  
+  // Log a cada 10 requisições
+  if (requestCount % 10 === 0) {
+    console.log('📊 Estatísticas de Requisições:', {
+      total: requestCount,
+      sucessos: successAuthCount,
+      falhas: failedAuthCount,
+      ultimaRequisicao: timeSinceLastRequest + 'ms atrás'
     });
   }
-  next();
+  
+  // Primeira tentativa (mais detalhada)
+  if (requestCount === 1 || requestCount % 50 === 0) {
+    console.log('📨 Detalhes da requisição:', requestInfo);
+  }
+  
+  // Verifica o token de várias formas
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader && authHeader.split(' ')[1];
+  const directToken = authHeader; // Caso venha direto sem "Bearer"
+  const alternativeToken = req.headers['x-api-token'] || req.headers['token'] || req.headers['api-token'];
+  
+  // Debug de tokens (apenas nas primeiras requisições)
+  if (failedAuthCount < 5) {
+    console.log('🔑 Debug de autenticação:', {
+      receivedAuthHeader: authHeader,
+      bearerToken: bearerToken ? bearerToken.substring(0, 10) + '...' : 'null',
+      directToken: directToken ? directToken.substring(0, 10) + '...' : 'null',
+      alternativeToken: alternativeToken ? alternativeToken.substring(0, 10) + '...' : 'null',
+      expectedToken: API_TOKEN.substring(0, 10) + '...'
+    });
+  }
+  
+  // Verifica se algum dos tokens está correto
+  if (bearerToken === API_TOKEN || 
+      directToken === API_TOKEN || 
+      alternativeToken === API_TOKEN ||
+      authHeader === `Bearer ${API_TOKEN}`) {
+    successAuthCount++;
+    console.log('✅ Autenticação bem-sucedida! #' + successAuthCount);
+    next();
+  } else {
+    failedAuthCount++;
+    
+    // Log detalhado apenas nas primeiras 5 falhas
+    if (failedAuthCount <= 5) {
+      console.log('❌ Falha na autenticação #' + failedAuthCount, {
+        url: req.originalUrl,
+        receivedToken: bearerToken || directToken || alternativeToken || 'NENHUM TOKEN',
+        headers: req.headers
+      });
+      
+      if (failedAuthCount === 5) {
+        console.log('⚠️ Suprimindo logs de falha de autenticação após 5 tentativas...');
+      }
+    }
+    
+    return res.status(401).json({
+      statusCode: 401,
+      reasonPhrase: 'Token inválido ou ausente',
+      debug: process.env.NODE_ENV === 'development' ? {
+        receivedToken: bearerToken || directToken || alternativeToken,
+        expectedFormat: 'Bearer YOUR_TOKEN',
+        alternativeHeaders: ['x-api-token', 'token', 'api-token']
+      } : undefined
+    });
+  }
 };
 
 // =====================================================
@@ -183,7 +268,25 @@ app.get('/', (req, res) => {
       detalhes: 'GET /api/order/:orderId',
       envioDetalhes: 'POST /api/order/details',
       atualizacaoStatus: 'POST /api/order/status'
+    },
+    stats: {
+      totalRequests: requestCount,
+      successfulAuth: successAuthCount,
+      failedAuth: failedAuthCount
     }
+  });
+});
+
+app.get('/debug/stats', (req, res) => {
+  res.json({
+    estatisticas: {
+      totalRequisicoes: requestCount,
+      autenticacoesComSucesso: successAuthCount,
+      autenticacoesFalhadas: failedAuthCount,
+      taxaSucesso: successAuthCount > 0 ? ((successAuthCount / (successAuthCount + failedAuthCount)) * 100).toFixed(2) + '%' : '0%'
+    },
+    ultimasRequisicoes: requestLog.slice(-10), // Últimas 10 requisições
+    merchant: MERCHANT_CONFIG
   });
 });
 
@@ -235,6 +338,8 @@ app.use('/api', authenticate);
 // 1) ENDPOINT DE POLLING
 app.get('/api/polling', async (req, res) => {
   try {
+    console.log('🔄 Polling executado com sucesso!');
+    
     const { rows } = await pool.query(`
       SELECT
         pe.event_id::text AS id,
@@ -269,6 +374,7 @@ app.get('/api/polling', async (req, res) => {
     `);
 
     if (rows.length > 0) {
+      console.log(`📦 ${rows.length} eventos encontrados para processar`);
       const ids = rows.map(r => r.id);
       await pool.query(`
         UPDATE pedidos_events
@@ -279,7 +385,7 @@ app.get('/api/polling', async (req, res) => {
 
     res.json({ items: rows, statusCode: 0, reasonPhrase: null });
   } catch (error) {
-    console.error('Erro no polling:', error);
+    console.error('❌ Erro no polling:', error);
     res.status(500).json({ items: [], statusCode: 1, reasonPhrase: error.message });
   }
 });
@@ -288,12 +394,15 @@ app.get('/api/polling', async (req, res) => {
 app.get('/api/order/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
+    console.log(`📋 Buscando detalhes do pedido: ${orderId}`);
+    
     const { rows } = await pool.query(
       'SELECT dados, status, merchant_id, merchant_code, merchant_name, merchant_url, connect_db_id, roles FROM pedidos WHERE id = $1',
       [orderId]
     );
 
     if (rows.length === 0) {
+      console.log(`⚠️ Pedido não encontrado: ${orderId}`);
       return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
@@ -316,9 +425,10 @@ app.get('/api/order/:orderId', async (req, res) => {
       VALUES($1, 'ORDER_DETAILS_REQUESTED', $2, $3)
     `, [orderId, MERCHANT_CONFIG.MerchantID, MERCHANT_CONFIG.MerchantCode]);
 
+    console.log(`✅ Detalhes do pedido ${orderId} retornados com sucesso`);
     res.json({ item: pedidoComMerchant, statusCode: 0, reasonPhrase: null });
   } catch (error) {
-    console.error('Erro buscando pedido:', error);
+    console.error('❌ Erro buscando pedido:', error);
     res.status(500).json({ item: null, statusCode: 500, reasonPhrase: error.message });
   }
 });
@@ -330,6 +440,8 @@ app.post('/api/order/details', async (req, res) => {
     if (!pedido.Id) {
       return res.status(400).json({ statusCode: 400, reasonPhrase: 'ID do pedido é obrigatório' });
     }
+
+    console.log(`📥 Recebendo detalhes do pedido: ${pedido.Id}`);
 
     // Extrai ou usa configurações default do merchant
     const merchantData = pedido.merchant || {};
@@ -361,9 +473,10 @@ app.post('/api/order/details', async (req, res) => {
       VALUES($1, 'ORDER_DETAILS_SENT', 'PLACED', $2, $3)
     `, [pedido.Id, merchantId, merchantCode]);
 
+    console.log(`✅ Pedido ${pedido.Id} salvo com sucesso`);
     res.json({ statusCode: 0, reasonPhrase: `${pedido.Id} enviado com sucesso.` });
   } catch (error) {
-    console.error('Erro salvando detalhes:', error);
+    console.error('❌ Erro salvando detalhes:', error);
     res.status(500).json({ statusCode: 500, reasonPhrase: error.message });
   }
 });
@@ -376,8 +489,11 @@ app.post('/api/order/status', async (req, res) => {
       return res.status(400).json({ statusCode: 400, reasonPhrase: 'orderId e status são obrigatórios' });
     }
 
+    console.log(`🔄 Atualizando status do pedido ${orderId} para ${status}`);
+
     const { rows } = await pool.query('SELECT merchant_id, merchant_code FROM pedidos WHERE id = $1', [orderId]);
     if (rows.length === 0) {
+      console.log(`⚠️ Pedido não encontrado: ${orderId}`);
       return res.status(404).json({ statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
@@ -395,12 +511,13 @@ app.post('/api/order/status', async (req, res) => {
       VALUES($1, 'status_updated', $2, $3, $4)
     `, [orderId, status, merchantId, merchantCode]);
 
+    console.log(`✅ Status do pedido ${orderId} atualizado para ${status}`);
     res.json({
       statusCode: 0,
       reasonPhrase: `${orderId} alterado para '${status}': ${justification || 'Status atualizado'}.`
     });
   } catch (error) {
-    console.error('Erro atualizando status:', error);
+    console.error('❌ Erro atualizando status:', error);
     res.status(500).json({ statusCode: 500, reasonPhrase: error.message });
   }
 });
@@ -464,6 +581,7 @@ app.post('/test/criar-pedido', async (req, res) => {
       VALUES($1, 'created', 'PLACED', $2, $3)
     `, [pedidoTeste.id, MERCHANT_CONFIG.MerchantID, MERCHANT_CONFIG.MerchantCode]);
 
+    console.log(`🎉 Pedido de teste criado: ${pedidoTeste.id}`);
     res.json({ 
       mensagem: 'Pedido de teste criado com sucesso', 
       pedidoId: pedidoTeste.id,
@@ -474,14 +592,14 @@ app.post('/test/criar-pedido', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Erro ao criar pedido de teste:', error);
+    console.error('❌ Erro ao criar pedido de teste:', error);
     res.status(500).json({ erro: error.message });
   }
 });
 
 // Tratamento de erro global
 app.use((err, req, res, next) => {
-  console.error('Erro não tratado:', err.stack);
+  console.error('❌ Erro não tratado:', err.stack);
   res.status(500).json({ 
     statusCode: 500, 
     reasonPhrase: 'Erro interno do servidor',
@@ -491,6 +609,7 @@ app.use((err, req, res, next) => {
 
 // Inicia o servidor
 app.listen(PORT, '0.0.0.0', () => {
+  console.log('='.repeat(60));
   console.log(`🚀 API rodando em http://0.0.0.0:${PORT}`);
   console.log(`🗄️  Banco de dados: Supabase`);
   console.log(`🏪 Merchant: ${MERCHANT_CONFIG.MerchantName} (${MERCHANT_CONFIG.MerchantCode})`);
@@ -498,21 +617,27 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 MerchantUrl: ${MERCHANT_CONFIG.MerchantUrl}`);
   console.log(`🔑 Roles: ${MERCHANT_CONFIG.Roles.join(', ')}`);
   console.log(`✅ Token de autenticação: Bearer ${API_TOKEN}`);
+  console.log('='.repeat(60));
   console.log(`📝 Endpoints da API:`);
   console.log(`   - GET  /api/polling`);
   console.log(`   - GET  /api/order/:orderId`);
   console.log(`   - POST /api/order/details`);
   console.log(`   - POST /api/order/status`);
-  console.log(`🔧 Debug:`);
-  console.log(`   - GET  /debug/merchant`);
-  console.log(`   - GET  /debug/pedidos`);
-  console.log(`   - GET  /debug/eventos`);
-  console.log(`   - POST /test/criar-pedido`);
+  console.log('='.repeat(60));
+  console.log(`🔧 Debug & Monitoramento:`);
+  console.log(`   - GET  /              (Status geral)`);
+  console.log(`   - GET  /debug/stats   (Estatísticas de requisições)`);
+  console.log(`   - GET  /debug/merchant(Configuração do merchant)`);
+  console.log(`   - GET  /debug/pedidos (Lista pedidos)`);
+  console.log(`   - GET  /debug/eventos (Lista eventos)`);
+  console.log(`   - POST /test/criar-pedido (Criar pedido teste)`);
+  console.log('='.repeat(60));
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM recebido. Fechando conexões...');
+  console.log(`📊 Estatísticas finais: ${requestCount} requisições, ${successAuthCount} sucessos, ${failedAuthCount} falhas`);
   pool.end(() => {
     console.log('Pool de conexões fechado.');
     process.exit(0);
@@ -520,9 +645,4 @@ process.on('SIGTERM', () => {
 });
 
 process.on('SIGINT', () => {
-  console.log('SIGINT recebido. Fechando conexões...');
-  pool.end(() => {
-    console.log('Pool de conexões fechado.');
-    process.exit(0);
-  });
-});
+  console.l
