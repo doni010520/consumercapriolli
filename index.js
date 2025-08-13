@@ -11,6 +11,48 @@ require('dotenv').config();
 const app = express();
 app.use(cors());
 app.use(express.json());
+// --- ALIAS/REWRITE para funcionar SEM o prefixo /api ---
+// (mantém uma única implementação: reescreve e deixa seguir para /api/*)
+
+function qs(req) {
+  return req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+}
+
+// Polling (GET /polling -> /api/polling)
+app.get('/polling', (req, res, next) => {
+  req.url = '/api/polling' + qs(req);
+  next();
+});
+
+// Detalhes via query (GET /order?orderId=... -> /api/order?orderId=...)
+app.get('/order', (req, res, next) => {
+  req.url = '/api/order' + qs(req);
+  next();
+});
+
+// Detalhes via path (GET /order/:orderId -> /api/order/:orderId)
+app.get('/order/:orderId', (req, res, next) => {
+  req.url = `/api/order/${encodeURIComponent(req.params.orderId)}` + qs(req);
+  next();
+});
+
+// Status (POST /order/status -> /api/order/status)
+app.post('/order/status', (req, res, next) => {
+  req.url = '/api/order/status' + qs(req);
+  next();
+});
+
+// Envio de detalhes (POST /order/details -> /api/order/details)
+app.post('/order/details', (req, res, next) => {
+  req.url = '/api/order/details' + qs(req);
+  next();
+});
+
+// Placeholder encodado (GET /order/%7BorderId%7D -> /api/order/%7BorderId%7D)
+app.get('/order/%7BorderId%7D', (req, res, next) => {
+  req.url = '/api/order/%7BorderId%7D' + qs(req);
+  next();
+});
 
 // 🔎 Log de entrada (antes do auth) — ajuda a ver se a requisição chega
 app.use((req, _res, next) => {
