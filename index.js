@@ -20,7 +20,7 @@ app.use((req, _res, next) => {
 
 // Porta e Token
 const PORT = process.env.PORT || 4000;
-let API_TOKEN = process.env.API_TOKEN || 'changeme-token';
+let API_TOKEN = process.env.API_TOKEN || '123456';
 
 // =====================================================
 // CONFIGURAÇÃO DO BANCO (SUPABASE / POSTGRES)
