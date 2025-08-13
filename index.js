@@ -12,38 +12,34 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Porta onde a API vai rodar
+// 🔎 Log de entrada (antes do auth) — ajuda a ver se a requisição chega
+app.use((req, _res, next) => {
+  console.log(`[IN] ${req.method} ${req.originalUrl} ua="${req.headers['user-agent'] || ''}" ip=${req.ip}`);
+  next();
+});
+
+// Porta e Token
 const PORT = process.env.PORT || 4000;
-
-// Token de autenticação (use variável de ambiente em produção)
-const API_TOKEN = process.env.API_TOKEN || '123456';
+let API_TOKEN = process.env.API_TOKEN || 'changeme-token';
 
 // =====================================================
-// CONFIGURAÇÃO DO BANCO DE DADOS (SUPABASE)
+// CONFIGURAÇÃO DO BANCO (SUPABASE / POSTGRES)
 // =====================================================
-
 let pool;
 const dbConfig = {};
 
-// Método 1: Connection String
 if (process.env.DATABASE_URL) {
   console.log('🔌 Tentando conectar usando DATABASE_URL...');
   dbConfig.connectionString = process.env.DATABASE_URL;
-}
-// Método 2: Variáveis separadas
-else if (process.env.SUPABASE_HOST) {
-  console.log('🔌 DATABASE_URL não encontrada. Tentando conectar com variáveis de ambiente separadas...');
+} else if (process.env.SUPABASE_HOST) {
+  console.log('🔌 DATABASE_URL não encontrada. Tentando conectar com variáveis separadas...');
   dbConfig.host = process.env.SUPABASE_HOST;
   dbConfig.port = process.env.SUPABASE_PORT || 5432;
   dbConfig.user = process.env.SUPABASE_USER;
   dbConfig.password = process.env.SUPABASE_PASSWORD;
   dbConfig.database = process.env.SUPABASE_DB || 'postgres';
-}
-
-// Validação final
-if (!dbConfig.connectionString && !dbConfig.host) {
+} else {
   console.error('❌ ERRO FATAL: Nenhuma configuração de banco de dados encontrada.');
-  console.error('Configure DATABASE_URL ou as variáveis SUPABASE_HOST, SUPABASE_USER, etc.');
   process.exit(1);
 }
 
@@ -55,8 +51,8 @@ pool = new Pool(dbConfig);
 pool.connect((err, client, release) => {
   if (err) {
     console.error('❌ Erro ao conectar ao Supabase:', err.stack);
-    if (err.message.includes('SSL')) {
-      console.info('💡 DICA: garanta "?sslmode=require" na connection string.');
+    if (err.message?.includes('SSL')) {
+      console.info('💡 DICA: use "?sslmode=require" na connection string.');
     }
   } else {
     console.log('✅ Conectado ao banco de dados Supabase com sucesso!');
@@ -65,9 +61,8 @@ pool.connect((err, client, release) => {
 });
 
 // =====================================================
-// INICIALIZAÇÃO E ESTRUTURA DO BANCO DE DADOS
+// INICIALIZAÇÃO DO BANCO (TABELAS / ÍNDICES)
 // =====================================================
-
 async function initDb() {
   const client = await pool.connect();
   try {
@@ -130,15 +125,26 @@ async function initDb() {
   }
 }
 
+// Seed com os dados **oficiais** do Consumer (dump enviado)
 async function seedInitialMerchant() {
-  console.log('🌱 Verificando e inserindo dados do merchant de teste...');
+  console.log('🌱 Verificando e inserindo dados do merchant de teste (oficial do Consumer)...');
   const merchantData = {
-    id: '19f40604-e725-4fd4-ad06-aae8aaa8e213',
+    // ⚠️ Alinhado com o "Access Token" do Consumer
+    id: '19f406fa-e725-4fd4-ad06-aae8aaa8e213',
     code: '81193',
-    name: 'Pizzaria Capriolli',
-    url: 'Capriolli',
+    name: 'Pizzaria Capriolli Limitada', // pode manter "Pizzaria Capriolli" se preferir
+    url: 'capriolli',                    // minúsculo, como no Consumer
     connectDbId: '-2147463250',
-    roles: ['consumer-rede', 'mobile', 'fiscal', 'menudino-completo', 'connect', 'taxa-implantacao-treinamento'],
+    roles: [
+      'consumer-rede',
+      'mobile',
+      'fiscal',
+      'menudino-completo',
+      'connect',
+      'taxa-implantacao-treinamento',
+      'Merchant',
+      'Premium'
+    ],
   };
 
   try {
@@ -149,14 +155,21 @@ async function seedInitialMerchant() {
       ON CONFLICT (id) DO UPDATE SET
         code = EXCLUDED.code,
         name = EXCLUDED.name,
-        url = EXCLUDED.url,
+        url  = EXCLUDED.url,
         connect_db_id = EXCLUDED.connect_db_id,
         roles = EXCLUDED.roles,
         updated_at = NOW();
-    `,
-      [merchantData.id, merchantData.code, merchantData.name, merchantData.url, merchantData.connectDbId, JSON.stringify(merchantData.roles)],
+      `,
+      [
+        merchantData.id,
+        merchantData.code,
+        merchantData.name,
+        merchantData.url,
+        merchantData.connectDbId,
+        JSON.stringify(merchantData.roles),
+      ]
     );
-    console.log('✅ Merchant de teste "Pizzaria Capriolli" garantido no banco.');
+    console.log('✅ Merchant alinhado com o Consumer garantido no banco.');
   } catch (error) {
     console.error('❌ Erro ao inserir merchant de teste:', error);
   }
@@ -170,29 +183,44 @@ initDb()
   });
 
 // =====================================================
-// MIDDLEWARE DE AUTENTICAÇÃO (mais tolerante a formatos)
+// MIDDLEWARE DE AUTENTICAÇÃO (robusto + workarounds)
 // =====================================================
 const authenticate = (req, res, next) => {
   const h = req.headers;
   const rawAuth = h['authorization'];
 
-  // Suporta "Bearer xxx", "Token xxx" ou o token cru no Authorization
-  const fromAuth =
+  // Suporta: "Bearer xxx", "Token xxx" ou token cru no Authorization
+  let fromAuth =
     rawAuth?.startsWith('Bearer ') ? rawAuth.slice(7) :
     rawAuth?.startsWith('Token ')  ? rawAuth.slice(6) :
     rawAuth;
 
-  const token =
+  let token =
     (fromAuth && fromAuth.trim()) ||
     h['x-api-key'] ||
     h['x-access-token'] ||
     req.query.token ||
     (req.body && req.body.token);
 
+  // Workaround 1: token vindo como "<token>"
+  if (token && token.startsWith('<') && token.endsWith('>')) {
+    token = token.slice(1, -1).trim();
+  }
+
+  // Workaround 2: alguns clientes enviam "token/ORDERID"
+  if (token && token.includes('/')) {
+    const [maybeToken, ...rest] = token.split('/');
+    req._orderIdFromTokenFallback = rest.join('/');
+    token = maybeToken;
+  }
+
+  // Validação
   if (token !== API_TOKEN) {
-    // Log detalhado opcional
     if (process.env.DEBUG_AUTH === '1') {
-      console.warn(`[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" recebido="${token || 'undefined'}"`);
+      console.warn(
+        `[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" ` +
+        `recebido="${(req.query.token || fromAuth || token || 'undefined')}"`
+      );
     } else {
       console.warn(`[AUTH] ${req.method} ${req.path} token inválido ou ausente`);
     }
@@ -202,30 +230,30 @@ const authenticate = (req, res, next) => {
 };
 
 // =====================================================
-// ROTAS PÚBLICAS E DE DEBUG
+// ROTAS PÚBLICAS E DEBUG
 // =====================================================
-
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.json({
     mensagem: 'API Consumer Integration funcionando!',
-    versao: '2.0.2 (Conexão Flexível)',
+    versao: '2.0.4 (Merchant alinhado + logger de entrada)',
     database: 'Supabase',
     endpoints: {
+      health: 'GET /healthz',
       polling: 'GET /api/polling',
-      detalhes: 'GET /api/order/:orderId',
+      detalhes: 'GET /api/order/:orderId  |  GET /api/order?orderId=...',
       envioDetalhes: 'POST /api/order/details',
       atualizacaoStatus: 'POST /api/order/status',
     },
   });
 });
 
-// Health check público (sem auth)
+// Health check público
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, version: '2.0.2', time: new Date().toISOString() });
+  res.json({ ok: true, version: '2.0.4', time: new Date().toISOString() });
 });
 
 // Debug
-app.get('/debug/merchants', async (req, res) => {
+app.get('/debug/merchants', async (_req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM merchants ORDER BY created_at DESC');
     res.json(rows);
@@ -235,7 +263,7 @@ app.get('/debug/merchants', async (req, res) => {
   }
 });
 
-app.get('/debug/pedidos', async (req, res) => {
+app.get('/debug/pedidos', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT p.id, p.status, p.merchant_id, m.name as merchant_name, p.created_at, p.updated_at
@@ -250,12 +278,12 @@ app.get('/debug/pedidos', async (req, res) => {
   }
 });
 
-app.get('/debug/eventos', async (req, res) => {
+app.get('/debug/eventos', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT * FROM pedidos_events ORDER BY event_id DESC LIMIT 50
     `);
-    res.json(rows);
+  res.json(rows);
   } catch (error) {
     console.error('Erro ao buscar eventos:', error);
     res.status(500).json({ erro: error.message });
@@ -263,12 +291,12 @@ app.get('/debug/eventos', async (req, res) => {
 });
 
 // =====================================================
-// ROTAS PROTEGIDAS DA API DO CONSUMER
+// ROTAS PROTEGIDAS
 // =====================================================
 app.use('/api', authenticate);
 
-// 1) ENDPOINT DE POLLING
-app.get('/api/polling', async (req, res) => {
+// 1) POLLING
+app.get('/api/polling', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -303,10 +331,7 @@ app.get('/api/polling', async (req, res) => {
 
     if (rows.length > 0) {
       const ids = rows.map((r) => Number(r.id));
-      await pool.query(
-        'UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])',
-        [ids],
-      );
+      await pool.query('UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])', [ids]);
     }
 
     res.json({ items: rows, statusCode: 0, reasonPhrase: null });
@@ -316,21 +341,51 @@ app.get('/api/polling', async (req, res) => {
   }
 });
 
-// 2) ENDPOINT DE DETALHES DO PEDIDO
+// 2a) DETALHES — workaround para /api/order/%7BorderId%7D
+app.get('/api/order/%7BorderId%7D', async (req, res) => {
+  const orderId = req._orderIdFromTokenFallback || req.query.orderId || null;
+  if (!orderId) return res.status(400).json({ item: null, statusCode: 400, reasonPhrase: 'orderId ausente' });
+
+  try {
+    const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
+    if (!rows.length) return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
+
+    await pool.query(`INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`, [orderId]);
+    return res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
+  } catch (e) {
+    console.error('Erro /api/order/%7BorderId%7D:', e);
+    return res.status(500).json({ item: null, statusCode: 500, reasonPhrase: e.message });
+  }
+});
+
+// 2b) DETALHES — formato query: /api/order?orderId=...
+app.get('/api/order', async (req, res) => {
+  const orderId = req.query.orderId || req._orderIdFromTokenFallback || null;
+  if (!orderId) return res.status(400).json({ item: null, statusCode: 400, reasonPhrase: 'orderId ausente' });
+
+  try {
+    const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
+    if (!rows.length) return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
+
+    await pool.query(`INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`, [orderId]);
+    return res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
+  } catch (e) {
+    console.error('Erro /api/order:', e);
+    return res.status(500).json({ item: null, statusCode: 500, reasonPhrase: e.message });
+  }
+});
+
+// 2c) DETALHES — formato “bonito”: /api/order/:orderId
 app.get('/api/order/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
 
-    if (rows.length === 0) {
+    if (!rows.length) {
       return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
-    await pool.query(
-      `INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`,
-      [orderId],
-    );
-
+    await pool.query(`INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`, [orderId]);
     res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
   } catch (error) {
     console.error(`Erro buscando pedido ${req.params.orderId}:`, error);
@@ -338,7 +393,7 @@ app.get('/api/order/:orderId', async (req, res) => {
   }
 });
 
-// 3) ENDPOINT PARA RECEBER DETALHES DO PEDIDO (DO CONSUMER)
+// 3) RECEBER DETALHES — POST /api/order/details
 app.post('/api/order/details', async (req, res) => {
   const pedido = req.body;
   const client = await pool.connect();
@@ -358,8 +413,8 @@ app.post('/api/order/details', async (req, res) => {
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
         updated_at = NOW();
-    `,
-      [merchant.Id, merchant.Name || 'Nome não informado'],
+      `,
+      [merchant.Id, merchant.Name || 'Nome não informado']
     );
 
     await client.query(
@@ -370,13 +425,13 @@ app.post('/api/order/details', async (req, res) => {
         dados = EXCLUDED.dados,
         status = CASE WHEN pedidos.status IS NULL THEN 'PLACED' ELSE pedidos.status END,
         updated_at = NOW();
-    `,
-      [pedido.Id, merchant.Id, pedido],
+      `,
+      [pedido.Id, merchant.Id, pedido]
     );
 
     await client.query(
       `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'CREATED', 'PLACED')`,
-      [pedido.Id],
+      [pedido.Id]
     );
 
     await client.query('COMMIT');
@@ -390,7 +445,7 @@ app.post('/api/order/details', async (req, res) => {
   }
 });
 
-// 4) ENDPOINT DE ATUALIZAÇÃO DE STATUS
+// 4) ATUALIZAÇÃO DE STATUS — POST /api/order/status
 app.post('/api/order/status', async (req, res) => {
   const { orderId, status, justification } = req.body;
   if (!orderId || !status) {
@@ -411,7 +466,7 @@ app.post('/api/order/status', async (req, res) => {
 
     await client.query(
       `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'status_updated', $2)`,
-      [orderId, status],
+      [orderId, status]
     );
 
     await client.query('COMMIT');
@@ -432,16 +487,16 @@ app.post('/api/order/status', async (req, res) => {
 // =====================================================
 // ROTAS DE TESTE
 // =====================================================
-app.post('/test/criar-pedido', async (req, res) => {
+app.post('/test/criar-pedido', async (_req, res) => {
   const client = await pool.connect();
   try {
     const pedidoId = `TEST-${Date.now()}`;
-    const merchantId = '19f40604-e725-4fd4-ad06-aae8aaa8e213';
+    const merchantId = '19f406fa-e725-4fd4-ad06-aae8aaa8e213'; // alinhado com o Consumer
 
     const pedidoTeste = {
       Id: pedidoId,
       Type: 'DELIVERY',
-      DisplayId: Math.floor(Math.random() * 9999).toString(),
+      DisplayId: String(Math.floor(Math.random() * 9999)).padStart(4, '0'),
       SalesChannel: 'PARTNER',
       CreatedAt: new Date().toISOString(),
       Merchant: { Id: merchantId, Name: 'Pizzaria Capriolli' },
@@ -474,17 +529,14 @@ app.post('/test/criar-pedido', async (req, res) => {
     };
 
     await client.query('BEGIN');
-
-    await client.query(
-      `INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')`,
-      [pedidoTeste.Id, pedidoTeste.Merchant.Id, pedidoTeste],
-    );
-
-    await client.query(
-      `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')`,
-      [pedidoTeste.Id],
-    );
-
+    await client.query(`INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')`, [
+      pedidoTeste.Id,
+      pedidoTeste.Merchant.Id,
+      pedidoTeste,
+    ]);
+    await client.query(`INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')`, [
+      pedidoTeste.Id,
+    ]);
     await client.query('COMMIT');
 
     res.status(201).json({ mensagem: 'Pedido de teste criado com sucesso', pedidoId: pedidoTeste.Id });
@@ -498,9 +550,9 @@ app.post('/test/criar-pedido', async (req, res) => {
 });
 
 // =====================================================
-// INICIALIZAÇÃO DO SERVIDOR E GRACEFUL SHUTDOWN
+// INICIALIZAÇÃO DO SERVIDOR E SHUTDOWN
 // =====================================================
-app.use((err, req, res, next) => {
+app.use((err, _req, res, _next) => {
   console.error('Erro não tratado:', err.stack);
   res.status(500).json({
     statusCode: 500,
@@ -512,11 +564,13 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API pronta e rodando em http://0.0.0.0:${PORT}`);
   console.log(`🗄️  Banco de dados: Supabase`);
-  console.log(`🔑 Token de autenticação: Bearer ${API_TOKEN ? '[definido]' : '[NÃO DEFINIDO]'}`);
+  console.log(`🔑 API_TOKEN len=${API_TOKEN ? String(API_TOKEN).length : 0} (não exibido)`);
   console.log(`\n📝 Endpoints da API:`);
   console.log(`   - GET  /healthz`);
   console.log(`   - GET  /api/polling`);
   console.log(`   - GET  /api/order/:orderId`);
+  console.log(`   - GET  /api/order?orderId=...`);
+  console.log(`   - GET  /api/order/%7BorderId%7D   (workaround)`);
   console.log(`   - POST /api/order/details`);
   console.log(`   - POST /api/order/status`);
   console.log(`\n🔧 Debug:`);
