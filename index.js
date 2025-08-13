@@ -1,7 +1,7 @@
 // index.js
 
 // =====================================================
-// IMPORTAÇÕES E CONFIGURAÇÃO INICIAL
+// IMPORTS & BOOT
 // =====================================================
 const express = require('express');
 const cors = require('cors');
@@ -11,61 +11,48 @@ require('dotenv').config();
 const app = express();
 app.use(cors());
 app.use(express.json());
-// --- ALIAS/REWRITE para funcionar SEM o prefixo /api ---
-// (mantém uma única implementação: reescreve e deixa seguir para /api/*)
 
-function qs(req) {
-  return req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-}
-
-// Polling (GET /polling -> /api/polling)
-app.get('/polling', (req, res, next) => {
-  req.url = '/api/polling' + qs(req);
-  next();
-});
-
-// Detalhes via query (GET /order?orderId=... -> /api/order?orderId=...)
-app.get('/order', (req, res, next) => {
-  req.url = '/api/order' + qs(req);
-  next();
-});
-
-// Detalhes via path (GET /order/:orderId -> /api/order/:orderId)
-app.get('/order/:orderId', (req, res, next) => {
-  req.url = `/api/order/${encodeURIComponent(req.params.orderId)}` + qs(req);
-  next();
-});
-
-// Status (POST /order/status -> /api/order/status)
-app.post('/order/status', (req, res, next) => {
-  req.url = '/api/order/status' + qs(req);
-  next();
-});
-
-// Envio de detalhes (POST /order/details -> /api/order/details)
-app.post('/order/details', (req, res, next) => {
-  req.url = '/api/order/details' + qs(req);
-  next();
-});
-
-// Placeholder encodado (GET /order/%7BorderId%7D -> /api/order/%7BorderId%7D)
-app.get('/order/%7BorderId%7D', (req, res, next) => {
-  req.url = '/api/order/%7BorderId%7D' + qs(req);
-  next();
-});
-
-// 🔎 Log de entrada (antes do auth) — ajuda a ver se a requisição chega
+// Log simples de entrada (antes do auth) para confirmar que a chamada chegou
 app.use((req, _res, next) => {
   console.log(`[IN] ${req.method} ${req.originalUrl} ua="${req.headers['user-agent'] || ''}" ip=${req.ip}`);
   next();
 });
 
-// Porta e Token
+// =====================================================
+// ALIASES SEM /api (compatível com a tela do Consumer)
+// =====================================================
+// Reescreve URLs sem /api para as rotas /api/* já implementadas
+const qs = (req) => (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '');
+
+// GET /polling  -> /api/polling
+app.get('/polling', (req, _res, next) => { req.url = '/api/polling' + qs(req); next(); });
+
+// GET /order?orderId=...  -> /api/order?orderId=...
+app.get('/order', (req, _res, next) => { req.url = '/api/order' + qs(req); next(); });
+
+// GET /order/:orderId -> /api/order/:orderId
+app.get('/order/:orderId', (req, _res, next) => {
+  req.url = `/api/order/${encodeURIComponent(req.params.orderId)}` + qs(req);
+  next();
+});
+
+// POST /order/status -> /api/order/status
+app.post('/order/status', (req, _res, next) => { req.url = '/api/order/status' + qs(req); next(); });
+
+// POST /order/details -> /api/order/details
+app.post('/order/details', (req, _res, next) => { req.url = '/api/order/details' + qs(req); next(); });
+
+// GET /order/%7BorderId%7D -> /api/order/%7BorderId%7D  (caso o app envie o placeholder encodado)
+app.get('/order/%7BorderId%7D', (req, _res, next) => { req.url = '/api/order/%7BorderId%7D' + qs(req); next(); });
+
+// =====================================================
+// CONFIG BÁSICA
+// =====================================================
 const PORT = process.env.PORT || 4000;
 let API_TOKEN = process.env.API_TOKEN || '123456';
 
 // =====================================================
-// CONFIGURAÇÃO DO BANCO (SUPABASE / POSTGRES)
+// BANCO (SUPABASE/POSTGRES)
 // =====================================================
 let pool;
 const dbConfig = {};
@@ -85,7 +72,7 @@ if (process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// SSL para Supabase
+// SSL p/ Supabase
 dbConfig.ssl = { rejectUnauthorized: false };
 pool = new Pool(dbConfig);
 
@@ -103,7 +90,7 @@ pool.connect((err, client, release) => {
 });
 
 // =====================================================
-// INICIALIZAÇÃO DO BANCO (TABELAS / ÍNDICES)
+// SCHEMA & SEED
 // =====================================================
 async function initDb() {
   const client = await pool.connect();
@@ -167,15 +154,14 @@ async function initDb() {
   }
 }
 
-// Seed com os dados **oficiais** do Consumer (dump enviado)
+// Usa os dados “oficiais” do dump do Consumer
 async function seedInitialMerchant() {
-  console.log('🌱 Verificando e inserindo dados do merchant de teste (oficial do Consumer)...');
+  console.log('🌱 Verificando e inserindo merchant alinhado ao Consumer...');
   const merchantData = {
-    // ⚠️ Alinhado com o "Access Token" do Consumer
-    id: '19f406fa-e725-4fd4-ad06-aae8aaa8e213',
+    id: '19f406fa-e725-4fd4-ad06-aae8aaa8e213', // alinhado com o Access Token do Consumer
     code: '81193',
-    name: 'Pizzaria Capriolli Limitada', // pode manter "Pizzaria Capriolli" se preferir
-    url: 'capriolli',                    // minúsculo, como no Consumer
+    name: 'Pizzaria Capriolli Limitada',
+    url: 'capriolli',
     connectDbId: '-2147463250',
     roles: [
       'consumer-rede',
@@ -211,9 +197,9 @@ async function seedInitialMerchant() {
         JSON.stringify(merchantData.roles),
       ]
     );
-    console.log('✅ Merchant alinhado com o Consumer garantido no banco.');
+    console.log('✅ Merchant alinhado garantido no banco.');
   } catch (error) {
-    console.error('❌ Erro ao inserir merchant de teste:', error);
+    console.error('❌ Erro ao inserir merchant:', error);
   }
 }
 
@@ -225,13 +211,13 @@ initDb()
   });
 
 // =====================================================
-// MIDDLEWARE DE AUTENTICAÇÃO (robusto + workarounds)
+// AUTH ROBUSTO (aceita Bearer / query / token/ORDERID)
 // =====================================================
 const authenticate = (req, res, next) => {
   const h = req.headers;
   const rawAuth = h['authorization'];
 
-  // Suporta: "Bearer xxx", "Token xxx" ou token cru no Authorization
+  // Bearer / Token / cru
   let fromAuth =
     rawAuth?.startsWith('Bearer ') ? rawAuth.slice(7) :
     rawAuth?.startsWith('Token ')  ? rawAuth.slice(6) :
@@ -244,25 +230,19 @@ const authenticate = (req, res, next) => {
     req.query.token ||
     (req.body && req.body.token);
 
-  // Workaround 1: token vindo como "<token>"
-  if (token && token.startsWith('<') && token.endsWith('>')) {
-    token = token.slice(1, -1).trim();
-  }
+  // Remove chevrons se vierem <token>
+  if (token && token.startsWith('<') && token.endsWith('>')) token = token.slice(1, -1).trim();
 
-  // Workaround 2: alguns clientes enviam "token/ORDERID"
+  // Token “grudado” com orderId: token/ORDERID
   if (token && token.includes('/')) {
     const [maybeToken, ...rest] = token.split('/');
-    req._orderIdFromTokenFallback = rest.join('/');
+    req._orderIdFromTokenFallback = rest.join('/'); // guarda o orderId para a rota consumir
     token = maybeToken;
   }
 
-  // Validação
   if (token !== API_TOKEN) {
     if (process.env.DEBUG_AUTH === '1') {
-      console.warn(
-        `[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" ` +
-        `recebido="${(req.query.token || fromAuth || token || 'undefined')}"`
-      );
+      console.warn(`[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" recebido="${(req.query.token || fromAuth || token || 'undefined')}"`);
     } else {
       console.warn(`[AUTH] ${req.method} ${req.path} token inválido ou ausente`);
     }
@@ -272,29 +252,27 @@ const authenticate = (req, res, next) => {
 };
 
 // =====================================================
-// ROTAS PÚBLICAS E DEBUG
+// ROTAS PÚBLICAS / DEBUG
 // =====================================================
 app.get('/', (_req, res) => {
   res.json({
     mensagem: 'API Consumer Integration funcionando!',
-    versao: '2.0.4 (Merchant alinhado + logger de entrada)',
+    versao: '2.1.0 (Aliases + Merchant alinhado)',
     database: 'Supabase',
     endpoints: {
       health: 'GET /healthz',
-      polling: 'GET /api/polling',
-      detalhes: 'GET /api/order/:orderId  |  GET /api/order?orderId=...',
-      envioDetalhes: 'POST /api/order/details',
-      atualizacaoStatus: 'POST /api/order/status',
+      polling: 'GET /api/polling  (alias: GET /polling)',
+      detalhes: 'GET /api/order/:orderId | GET /api/order?orderId=...  (aliases: /order...)',
+      envioDetalhes: 'POST /api/order/details  (alias: POST /order/details)',
+      atualizacaoStatus: 'POST /api/order/status  (alias: POST /order/status)',
     },
   });
 });
 
-// Health check público
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, version: '2.0.4', time: new Date().toISOString() });
+  res.json({ ok: true, version: '2.1.0', time: new Date().toISOString() });
 });
 
-// Debug
 app.get('/debug/merchants', async (_req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM merchants ORDER BY created_at DESC');
@@ -322,10 +300,8 @@ app.get('/debug/pedidos', async (_req, res) => {
 
 app.get('/debug/eventos', async (_req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT * FROM pedidos_events ORDER BY event_id DESC LIMIT 50
-    `);
-  res.json(rows);
+    const { rows } = await pool.query(`SELECT * FROM pedidos_events ORDER BY event_id DESC LIMIT 50`);
+    res.json(rows);
   } catch (error) {
     console.error('Erro ao buscar eventos:', error);
     res.status(500).json({ erro: error.message });
@@ -333,7 +309,7 @@ app.get('/debug/eventos', async (_req, res) => {
 });
 
 // =====================================================
-// ROTAS PROTEGIDAS
+// ROTAS PROTEGIDAS (oficiais com /api/*)
 // =====================================================
 app.use('/api', authenticate);
 
@@ -383,7 +359,7 @@ app.get('/api/polling', async (_req, res) => {
   }
 });
 
-// 2a) DETALHES — workaround para /api/order/%7BorderId%7D
+// 2a) DETALHES — placeholder encodado
 app.get('/api/order/%7BorderId%7D', async (req, res) => {
   const orderId = req._orderIdFromTokenFallback || req.query.orderId || null;
   if (!orderId) return res.status(400).json({ item: null, statusCode: 400, reasonPhrase: 'orderId ausente' });
@@ -400,7 +376,7 @@ app.get('/api/order/%7BorderId%7D', async (req, res) => {
   }
 });
 
-// 2b) DETALHES — formato query: /api/order?orderId=...
+// 2b) DETALHES — query: /api/order?orderId=...
 app.get('/api/order', async (req, res) => {
   const orderId = req.query.orderId || req._orderIdFromTokenFallback || null;
   if (!orderId) return res.status(400).json({ item: null, statusCode: 400, reasonPhrase: 'orderId ausente' });
@@ -417,7 +393,7 @@ app.get('/api/order', async (req, res) => {
   }
 });
 
-// 2c) DETALHES — formato “bonito”: /api/order/:orderId
+// 2c) DETALHES — path: /api/order/:orderId
 app.get('/api/order/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -572,9 +548,7 @@ app.post('/test/criar-pedido', async (_req, res) => {
 
     await client.query('BEGIN');
     await client.query(`INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')`, [
-      pedidoTeste.Id,
-      pedidoTeste.Merchant.Id,
-      pedidoTeste,
+      pedidoTeste.Id, pedidoTeste.Merchant.Id, pedidoTeste,
     ]);
     await client.query(`INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')`, [
       pedidoTeste.Id,
@@ -592,7 +566,7 @@ app.post('/test/criar-pedido', async (_req, res) => {
 });
 
 // =====================================================
-// INICIALIZAÇÃO DO SERVIDOR E SHUTDOWN
+// SERVER & SHUTDOWN
 // =====================================================
 app.use((err, _req, res, _next) => {
   console.error('Erro não tratado:', err.stack);
@@ -606,15 +580,15 @@ app.use((err, _req, res, _next) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API pronta e rodando em http://0.0.0.0:${PORT}`);
   console.log(`🗄️  Banco de dados: Supabase`);
-  console.log(`🔑 API_TOKEN len=${API_TOKEN ? String(API_TOKEN).length : 0} (não exibido)`);
+  console.log(`🔑 API_TOKEN len=${API_TOKEN ? String(API_TOKEN).length : 0} (valor não exibido)`);
   console.log(`\n📝 Endpoints da API:`);
   console.log(`   - GET  /healthz`);
-  console.log(`   - GET  /api/polling`);
-  console.log(`   - GET  /api/order/:orderId`);
-  console.log(`   - GET  /api/order?orderId=...`);
-  console.log(`   - GET  /api/order/%7BorderId%7D   (workaround)`);
-  console.log(`   - POST /api/order/details`);
-  console.log(`   - POST /api/order/status`);
+  console.log(`   - GET  /api/polling     (alias: /polling)`);
+  console.log(`   - GET  /api/order/:id   (alias: /order/:id)`);
+  console.log(`   - GET  /api/order?orderId=...  (alias: /order?orderId=...)`);
+  console.log(`   - GET  /api/order/%7BorderId%7D (alias: /order/%7BorderId%7D)`);
+  console.log(`   - POST /api/order/details (alias: /order/details)`);
+  console.log(`   - POST /api/order/status  (alias: /order/status)`);
   console.log(`\n🔧 Debug:`);
   console.log(`   - GET  /debug/merchants`);
   console.log(`   - GET  /debug/pedidos`);
@@ -632,6 +606,5 @@ const gracefulShutdown = (signal) => {
     });
   });
 };
-
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
