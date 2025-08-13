@@ -16,7 +16,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 4000;
 
 // Token de autenticação
-const API_TOKEN = process.env.API_TOKEN || 'changeme-token';
+const API_TOKEN = process.env.API_TOKEN || '123456';
 
 // =====================================================
 // CONFIGURAÇÃO DO BANCO (SUPABASE / POSTGRES)
