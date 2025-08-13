@@ -12,30 +12,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Porta da API
+// Porta onde a API vai rodar
 const PORT = process.env.PORT || 4000;
 
-// Token de autenticação
+// Token de autenticação (use variável de ambiente em produção)
 const API_TOKEN = process.env.API_TOKEN || '123456';
 
 // =====================================================
-// CONFIGURAÇÃO DO BANCO (SUPABASE / POSTGRES)
+// CONFIGURAÇÃO DO BANCO DE DADOS (SUPABASE)
 // =====================================================
+
 let pool;
 const dbConfig = {};
 
+// Método 1: Connection String
 if (process.env.DATABASE_URL) {
   console.log('🔌 Tentando conectar usando DATABASE_URL...');
   dbConfig.connectionString = process.env.DATABASE_URL;
-} else if (process.env.SUPABASE_HOST) {
-  console.log('🔌 DATABASE_URL não encontrada. Tentando conectar com variáveis separadas...');
+}
+// Método 2: Variáveis separadas
+else if (process.env.SUPABASE_HOST) {
+  console.log('🔌 DATABASE_URL não encontrada. Tentando conectar com variáveis de ambiente separadas...');
   dbConfig.host = process.env.SUPABASE_HOST;
   dbConfig.port = process.env.SUPABASE_PORT || 5432;
   dbConfig.user = process.env.SUPABASE_USER;
   dbConfig.password = process.env.SUPABASE_PASSWORD;
   dbConfig.database = process.env.SUPABASE_DB || 'postgres';
-} else {
+}
+
+// Validação final
+if (!dbConfig.connectionString && !dbConfig.host) {
   console.error('❌ ERRO FATAL: Nenhuma configuração de banco de dados encontrada.');
+  console.error('Configure DATABASE_URL ou as variáveis SUPABASE_HOST, SUPABASE_USER, etc.');
   process.exit(1);
 }
 
@@ -48,7 +56,7 @@ pool.connect((err, client, release) => {
   if (err) {
     console.error('❌ Erro ao conectar ao Supabase:', err.stack);
     if (err.message.includes('SSL')) {
-      console.info('💡 DICA: use "?sslmode=require" na connection string.');
+      console.info('💡 DICA: garanta "?sslmode=require" na connection string.');
     }
   } else {
     console.log('✅ Conectado ao banco de dados Supabase com sucesso!');
@@ -57,8 +65,9 @@ pool.connect((err, client, release) => {
 });
 
 // =====================================================
-// INICIALIZAÇÃO DO BANCO (TABELAS / ÍNDICES)
+// INICIALIZAÇÃO E ESTRUTURA DO BANCO DE DADOS
 // =====================================================
+
 async function initDb() {
   const client = await pool.connect();
   try {
@@ -161,38 +170,29 @@ initDb()
   });
 
 // =====================================================
-// MIDDLEWARE DE AUTENTICAÇÃO (robusto + workaround token/orderId)
+// MIDDLEWARE DE AUTENTICAÇÃO (mais tolerante a formatos)
 // =====================================================
 const authenticate = (req, res, next) => {
   const h = req.headers;
   const rawAuth = h['authorization'];
 
-  // Suporta: "Bearer xxx", "Token xxx" ou token cru no header Authorization
-  let fromAuth =
+  // Suporta "Bearer xxx", "Token xxx" ou o token cru no Authorization
+  const fromAuth =
     rawAuth?.startsWith('Bearer ') ? rawAuth.slice(7) :
     rawAuth?.startsWith('Token ')  ? rawAuth.slice(6) :
     rawAuth;
 
-  let token =
+  const token =
     (fromAuth && fromAuth.trim()) ||
     h['x-api-key'] ||
     h['x-access-token'] ||
     req.query.token ||
     (req.body && req.body.token);
 
-  // Workaround: alguns clientes estão enviando "token/ORDERID"
-  if (token && token.includes('/')) {
-    const [maybeToken, ...rest] = token.split('/');
-    req._orderIdFromTokenFallback = rest.join('/'); // guarda ORDERID extraído do token
-    token = maybeToken;
-  }
-
-  // Tira chevrons se alguém colou <token>
-  if (token && token.startsWith('<') && token.endsWith('>')) token = token.slice(1, -1).trim();
-
   if (token !== API_TOKEN) {
+    // Log detalhado opcional
     if (process.env.DEBUG_AUTH === '1') {
-      console.warn(`[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" recebido="${(req.query.token || fromAuth || token || 'undefined')}"`);
+      console.warn(`[AUTH] ${req.method} ${req.path} header="${rawAuth || 'undefined'}" recebido="${token || 'undefined'}"`);
     } else {
       console.warn(`[AUTH] ${req.method} ${req.path} token inválido ou ausente`);
     }
@@ -202,28 +202,30 @@ const authenticate = (req, res, next) => {
 };
 
 // =====================================================
-// ROTAS PÚBLICAS E DEBUG
+// ROTAS PÚBLICAS E DE DEBUG
 // =====================================================
+
 app.get('/', (req, res) => {
   res.json({
     mensagem: 'API Consumer Integration funcionando!',
-    versao: '2.0.3 (Auth resiliente)',
+    versao: '2.0.2 (Conexão Flexível)',
     database: 'Supabase',
     endpoints: {
-      health: 'GET /healthz',
       polling: 'GET /api/polling',
-      detalhes: 'GET /api/order/:orderId  |  GET /api/order?orderId=...',
+      detalhes: 'GET /api/order/:orderId',
       envioDetalhes: 'POST /api/order/details',
       atualizacaoStatus: 'POST /api/order/status',
     },
   });
 });
 
+// Health check público (sem auth)
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, version: '2.0.3', time: new Date().toISOString() });
+  res.json({ ok: true, version: '2.0.2', time: new Date().toISOString() });
 });
 
-app.get('/debug/merchants', async (_req, res) => {
+// Debug
+app.get('/debug/merchants', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM merchants ORDER BY created_at DESC');
     res.json(rows);
@@ -233,7 +235,7 @@ app.get('/debug/merchants', async (_req, res) => {
   }
 });
 
-app.get('/debug/pedidos', async (_req, res) => {
+app.get('/debug/pedidos', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT p.id, p.status, p.merchant_id, m.name as merchant_name, p.created_at, p.updated_at
@@ -248,7 +250,7 @@ app.get('/debug/pedidos', async (_req, res) => {
   }
 });
 
-app.get('/debug/eventos', async (_req, res) => {
+app.get('/debug/eventos', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT * FROM pedidos_events ORDER BY event_id DESC LIMIT 50
@@ -261,12 +263,12 @@ app.get('/debug/eventos', async (_req, res) => {
 });
 
 // =====================================================
-// ROTAS PROTEGIDAS
+// ROTAS PROTEGIDAS DA API DO CONSUMER
 // =====================================================
 app.use('/api', authenticate);
 
-// 1) POLLING
-app.get('/api/polling', async (_req, res) => {
+// 1) ENDPOINT DE POLLING
+app.get('/api/polling', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -301,7 +303,10 @@ app.get('/api/polling', async (_req, res) => {
 
     if (rows.length > 0) {
       const ids = rows.map((r) => Number(r.id));
-      await pool.query('UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])', [ids]);
+      await pool.query(
+        'UPDATE pedidos_events SET consumed = TRUE WHERE event_id = ANY($1::int[])',
+        [ids],
+      );
     }
 
     res.json({ items: rows, statusCode: 0, reasonPhrase: null });
@@ -311,51 +316,21 @@ app.get('/api/polling', async (_req, res) => {
   }
 });
 
-// 2a) DETALHES (workaround para chamada com placeholder encodado)
-app.get('/api/order/%7BorderId%7D', async (req, res) => {
-  const orderId = req._orderIdFromTokenFallback || req.query.orderId || null;
-  if (!orderId) return res.status(400).json({ item: null, statusCode: 400, reasonPhrase: 'orderId ausente' });
-
-  try {
-    const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
-    if (!rows.length) return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
-
-    await pool.query(`INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`, [orderId]);
-    return res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
-  } catch (e) {
-    console.error('Erro /api/order/%7BorderId%7D:', e);
-    return res.status(500).json({ item: null, statusCode: 500, reasonPhrase: e.message });
-  }
-});
-
-// 2b) DETALHES (formato query: /api/order?orderId=...)
-app.get('/api/order', async (req, res) => {
-  const orderId = req.query.orderId || req._orderIdFromTokenFallback || null;
-  if (!orderId) return res.status(400).json({ item: null, statusCode: 400, reasonPhrase: 'orderId ausente' });
-
-  try {
-    const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
-    if (!rows.length) return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
-
-    await pool.query(`INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`, [orderId]);
-    return res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
-  } catch (e) {
-    console.error('Erro /api/order:', e);
-    return res.status(500).json({ item: null, statusCode: 500, reasonPhrase: e.message });
-  }
-});
-
-// 2c) DETALHES (formato bonito: /api/order/:orderId)
+// 2) ENDPOINT DE DETALHES DO PEDIDO
 app.get('/api/order/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
     const { rows } = await pool.query('SELECT dados FROM pedidos WHERE id = $1', [orderId]);
 
-    if (!rows.length) {
+    if (rows.length === 0) {
       return res.status(404).json({ item: null, statusCode: 404, reasonPhrase: 'Pedido não encontrado' });
     }
 
-    await pool.query(`INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`, [orderId]);
+    await pool.query(
+      `INSERT INTO pedidos_events(order_id, event_type) VALUES($1, 'ORDER_DETAILS_REQUESTED')`,
+      [orderId],
+    );
+
     res.json({ item: rows[0].dados, statusCode: 0, reasonPhrase: null });
   } catch (error) {
     console.error(`Erro buscando pedido ${req.params.orderId}:`, error);
@@ -363,7 +338,7 @@ app.get('/api/order/:orderId', async (req, res) => {
   }
 });
 
-// 3) RECEBER DETALHES (POST /api/order/details)
+// 3) ENDPOINT PARA RECEBER DETALHES DO PEDIDO (DO CONSUMER)
 app.post('/api/order/details', async (req, res) => {
   const pedido = req.body;
   const client = await pool.connect();
@@ -415,7 +390,7 @@ app.post('/api/order/details', async (req, res) => {
   }
 });
 
-// 4) ATUALIZAÇÃO DE STATUS (POST /api/order/status)
+// 4) ENDPOINT DE ATUALIZAÇÃO DE STATUS
 app.post('/api/order/status', async (req, res) => {
   const { orderId, status, justification } = req.body;
   if (!orderId || !status) {
@@ -457,7 +432,7 @@ app.post('/api/order/status', async (req, res) => {
 // =====================================================
 // ROTAS DE TESTE
 // =====================================================
-app.post('/test/criar-pedido', async (_req, res) => {
+app.post('/test/criar-pedido', async (req, res) => {
   const client = await pool.connect();
   try {
     const pedidoId = `TEST-${Date.now()}`;
@@ -466,7 +441,7 @@ app.post('/test/criar-pedido', async (_req, res) => {
     const pedidoTeste = {
       Id: pedidoId,
       Type: 'DELIVERY',
-      DisplayId: Math.floor(Math.random() * 9999).toString().padStart(4, '0'),
+      DisplayId: Math.floor(Math.random() * 9999).toString(),
       SalesChannel: 'PARTNER',
       CreatedAt: new Date().toISOString(),
       Merchant: { Id: merchantId, Name: 'Pizzaria Capriolli' },
@@ -499,14 +474,17 @@ app.post('/test/criar-pedido', async (_req, res) => {
     };
 
     await client.query('BEGIN');
-    await client.query(`INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')`, [
-      pedidoTeste.Id,
-      pedidoTeste.Merchant.Id,
-      pedidoTeste,
-    ]);
-    await client.query(`INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')`, [
-      pedidoTeste.Id,
-    ]);
+
+    await client.query(
+      `INSERT INTO pedidos (id, merchant_id, dados, status) VALUES ($1, $2, $3, 'PLACED')`,
+      [pedidoTeste.Id, pedidoTeste.Merchant.Id, pedidoTeste],
+    );
+
+    await client.query(
+      `INSERT INTO pedidos_events(order_id, event_type, new_status) VALUES($1, 'created', 'PLACED')`,
+      [pedidoTeste.Id],
+    );
+
     await client.query('COMMIT');
 
     res.status(201).json({ mensagem: 'Pedido de teste criado com sucesso', pedidoId: pedidoTeste.Id });
@@ -520,9 +498,9 @@ app.post('/test/criar-pedido', async (_req, res) => {
 });
 
 // =====================================================
-// INICIALIZAÇÃO DO SERVIDOR E SHUTDOWN
+// INICIALIZAÇÃO DO SERVIDOR E GRACEFUL SHUTDOWN
 // =====================================================
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, next) => {
   console.error('Erro não tratado:', err.stack);
   res.status(500).json({
     statusCode: 500,
@@ -534,12 +512,11 @@ app.use((err, _req, res, _next) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API pronta e rodando em http://0.0.0.0:${PORT}`);
   console.log(`🗄️  Banco de dados: Supabase`);
-  console.log(`🔑 Token de autenticação: ${API_TOKEN ? '[definido]' : '[NÃO DEFINIDO]'}`);
+  console.log(`🔑 Token de autenticação: Bearer ${API_TOKEN ? '[definido]' : '[NÃO DEFINIDO]'}`);
   console.log(`\n📝 Endpoints da API:`);
   console.log(`   - GET  /healthz`);
   console.log(`   - GET  /api/polling`);
   console.log(`   - GET  /api/order/:orderId`);
-  console.log(`   - GET  /api/order?orderId=...`);
   console.log(`   - POST /api/order/details`);
   console.log(`   - POST /api/order/status`);
   console.log(`\n🔧 Debug:`);
